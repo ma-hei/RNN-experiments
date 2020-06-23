@@ -90,7 +90,7 @@ The RNN is trained on sequences of fixed length. In this case the sequence lengt
     print(len(rnn_train_data))
     print(rnn_train_data[0])
 
-We see that rnn_train_data is a SimpleDataset of length 1. Printing the single entry shows a tuple where the first item represents the training string from the first character to the new line symbol and the second item represents the string from the second character until the new line character. In each training step, the second item will be the learning target.
+We see that rnn_train_data is a SimpleDataset of length 1. Printing the single entry shows a tuple where the first item represents the training string from the first character to the last character and the second item represents the string from the second character until the new line character. Thus, in each training step, the second item will be the learning target.
 
 Next, the "forward-pass" of the RNN:
 
@@ -105,4 +105,157 @@ Next, the "forward-pass" of the RNN:
             outputs.append(Y)
         return np.concatenate(outputs, axis=0), (H,)
 
-The inputs parameter will always be one training string in which each character is represented by its one-hot-encoding.  
+In the for loop, we're iterating over each character of the training string.
+Getting the initial parameters of the RNN and initializing the state:
+
+    def get_params(vocab_size, num_hiddens, ctx):
+        num_inputs = num_outputs = vocab_size
+    
+        def normal(shape):
+            return np.random.normal(scale=0.01, size=shape, ctx=ctx)
+        # Hidden layer parameters
+        W_xh = normal((num_inputs, num_hiddens))
+        W_hh = normal((num_hiddens, num_hiddens))
+        b_h = np.zeros(num_hiddens, ctx=ctx)
+        # Output layer parameters
+        W_hq = normal((num_hiddens, num_outputs))
+        b_q = np.zeros(num_outputs, ctx=ctx)
+        # Attach gradients
+        params = [W_xh, W_hh, b_h, W_hq, b_q]
+        for param in params:
+            param.attach_grad()
+        return params
+    
+    def init_rnn_state(batch_size, num_hiddens, ctx):
+        return (np.zeros(shape=(batch_size, num_hiddens), ctx=ctx), )
+
+Now the RNN class:
+
+    class RNNModelScratch:
+        """A RNN Model based on scratch implementations."""
+    
+        def __init__(self, vocab_size, num_hiddens, ctx,
+                     get_params, init_state, forward):
+            self.vocab_size, self.num_hiddens = vocab_size, num_hiddens
+            self.params = get_params(vocab_size, num_hiddens, ctx)
+            self.init_state, self.forward_fn = init_state, forward
+    
+        def __call__(self, X, state):
+            X = npx.one_hot(X, self.vocab_size)
+            return self.forward_fn(X, state, self.params)
+    
+        def begin_state(self, batch_size, ctx):
+            return self.init_state(batch_size, self.num_hiddens, ctx)
+    
+        def collect_params(self):
+            return self.params
+
+We can now create an instance of the RNN and feed a training string into the (untrained) RNN.
+
+    num_hiddens, ctx = 512, mx.cpu()
+
+    model = RNNModelScratch(len(vocab), num_hiddens, ctx, get_params,
+                        init_rnn_state, rnn)
+
+    state = model.begin_state(batch_size=1, ctx=ctx)
+    result = model(rnn_train_data[0], state)
+
+    print(type(result))
+    print(len(result))
+    print(result[0].shape)
+    print(type(result[1]))
+    print(len(result[1]))
+    print(result[1][0].shape)
+
+We can see that we get back a tuple of length 2. The first element is the the RNN's output at each character-step. The second element is the hidden state of the RNN after the last character was fed into the RNN.
+
+Before training the model we need two helper methods. One is grad_clipping, which scales the parameters in order to avoid the parameters of the model to "explode" through backpropagation. The other one is gd (gradient descent) which is used to update the parameter models. We're also defining a loss function that we will use to train the model. We're using softmax cross entropy loss here.
+
+    def grad_clipping(model, theta):
+        params = model.params
+        norm = math.sqrt(sum((p.grad ** 2).sum() for p in params))
+        if norm > theta:
+            for param in params:
+                param.grad[:] *= theta / norm
+    
+    def gd(params):
+        for param in params:
+            param[:] = param - 0.1 * param.grad
+
+    loss = mx.gluon.loss.SoftmaxCrossEntropyLoss()
+
+Now the actual training of the model
+
+    def train_epoch_ch8(model, train_iter, loss, updater, ctx):
+        loss_total = 0
+        for X, Y in train_iter:
+    
+            X = X.as_np_ndarray()
+            Y = Y.as_np_ndarray()
+    
+            state = model.begin_state(batch_size=1, ctx=ctx)
+    
+            y = Y.T.reshape(-1)
+            X, y = X.as_in_ctx(ctx), y.as_in_ctx(ctx)  
+    
+            with autograd.record():
+                py, state = model(X, state)
+                l = loss(py, y).mean()
+    
+            loss_total += l
+            l.backward()
+            grad_clipping(model, 1)
+    
+            updater(model.params)
+    
+        return loss_total/len(train_iter)
+
+The train method gets a number of train/target (X/Y) sequences as input, as well as a loss function (softmax cross entropy loss) and an updater (gd). Now we just need to call this method with appropriate training data. Each training episode we're either generating a training string that begins with an 'a' and ends with a 'b' or we generate one that begins with a 'c' and ends on a 'd'. The target string is always the same as the training string shifted by one character to the right (train="axyzb" -> target ="xyzb\n"). The training strings have the patterns discussed above.
+
+    def train_ch8_changing_train_string(model, vocab, sequence_length, loss, lr, num_epochs, ctx):
+    
+        def updater(model):
+            return gd(model)
+    
+        for epoch in range(num_epochs):
+    
+            string1 = ""
+            if (epoch%2 == 0):
+                string1 = string1 + get_string_with_first_last_pattern('a', 'b', sequence_length-2)
+            else:
+                string1 = string1 + get_string_with_first_last_pattern('c', 'd', sequence_length-2)
+    
+            bptt_batchify = nlp.data.batchify.CorpusBPTTBatchify(vocab, sequence_length + 1, batch_size, last_batch='keep')
+            train_data = bptt_batchify(string1)
+    
+            l = train_epoch_ch8(model, train_data, loss, updater, ctx)
+            if epoch % 100 == 0:
+                print("done with epoch " + str(epoch))
+                print("loss: " + str(l))
+                print(predict_ch8('a', sequence_length, model, vocab, ctx))
+                print(predict_ch8('c', sequence_length, model, vocab, ctx))
+    
+Every 100 episodes, we're sampling two sequences from the RNN: one sequence that begins with an 'a' and one sequence that begins with a 'c'. This will give us some idea of how well the RNN has learned the pattern in the training strings up to this episode. predict_ch8 is defined as follows:
+
+    def predict_ch8(prefix, num_predicts, model, vocab, ctx):
+        state = model.begin_state(batch_size=1, ctx=ctx)
+        outputs = [vocab[prefix[0]]]
+    
+        def get_input():
+            return np.array([outputs[-1]], ctx=ctx).reshape(1, 1)
+        for y in prefix[1:]:  # Warmup state with prefix
+            _, state = model(get_input(), state)
+            outputs.append(vocab[y])
+        for _ in range(num_predicts):  # Predict num_predicts steps
+            Y, state = model(get_input(), state)
+            outputs.append(int(Y.argmax(axis=1).reshape(1)))
+        return ''.join([vocab.idx_to_token[i] for i in outputs])
+
+We can observe that after a few thousand epochs, the RNN has learned that strings beginning with 'a' are ending on 'b' and strings beginning with 'c' are ending with 'd'. The RNN has also learned that the ending 'b'/'d' is followed by a new line character:
+
+    done with epoch 9100                                                                                                                                                                             loss: 2.8529334                                                                                                                                                                                  aCCgZeb                                                                                                                                                                                              
+    cCCgZed                                                                                                                                                                                              
+    done with epoch 9200                                                                                                                                                                             loss: 2.8556256                                                                                                                                                                                  aCDCZKb                                                                                                                                                                                              
+    cbDbZbd                                                                                                                                                                                              
+    done with epoch 9300                                                                                                                                                                             loss: 2.880085                                                                                                                                                                                   affYUVb                                                                                                                                                                                              
+    cfYUfdd

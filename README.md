@@ -253,9 +253,14 @@ Every 100 episodes, we're sampling two sequences from the RNN: one sequence that
 
 We can observe that after a few thousand epochs, the RNN has learned that strings beginning with 'a' are ending on 'b' and strings beginning with 'c' are ending with 'd'. The RNN has also learned that the ending 'b'/'d' is followed by a new line character:
 
-    done with epoch 9100                                                                                                                                                                             loss: 2.8529334                                                                                                                                                                                  aCCgZeb                                                                                                                                                                                              
+    done with epoch 9100                                                                                                                                                                                 loss: 2.852933
+    aCCgZeb
+
     cCCgZed                                                                                                                                                                                              
-    done with epoch 9200                                                                                                                                                                             loss: 2.8556256                                                                                                                                                                                  aCDCZKb                                                                                                                                                                                              
+    done with epoch 9200                                                                                                                                                                                 loss: 2.8556256
+    aCDCZKb
+
     cbDbZbd                                                                                                                                                                                              
-    done with epoch 9300                                                                                                                                                                             loss: 2.880085                                                                                                                                                                                   affYUVb                                                                                                                                                                                              
+    done with epoch 9300                                                                                                                                                                                 loss: 2.880085
+    affYUVb                                                                                                                                                                                              
     cfYUfdd

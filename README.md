@@ -262,5 +262,7 @@ We can observe that after a few thousand epochs, the RNN has learned that string
 
     cbDbZbd                                                                                                                                                                                              
     done with epoch 9300                                                                                                                                                                                 loss: 2.880085
-    affYUVb                                                                                                                                                                                              
+    affYUVb
+
     cfYUfdd
+

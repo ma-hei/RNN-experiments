@@ -1,271 +1,202 @@
-# RNN experiments
-## Learning patterns in strings
+# Learning patterns in strings with RNNs
 
-Training data: strings of length n where all strings share certain patterns.
+Goal of this experiment is to see how well a simple RNN can learn simple patterns in strings. This experiment was created by roughly following the tutorial given here: https://d2l.ai/chapter_recurrent-neural-networks/rnn-scratch.html (with some modifications). 
 
-Example: All strings begin with either 'a' or 'b'. A string that begins with 'a' always ends with 'c'. A string that begins with 'b' always ends with 'd'. All characters between the first and last character are randomly chosen from [A-Za-z]. The number of characters between the first and last character is fixed. With n=5, training strings can be akcWcvc, bcWWybd.
+## Strings with simple patterns
 
-Goal: build a RNN with mxnet and gluon from scratch and observe if the RNN can learn simple patterns in the training strings. The RNN is built from scratch by following the tutorial given here https://d2l.ai/chapter_recurrent-neural-networks/rnn-scratch.html with some modifications.
+A string pattern is defined as follows: [(1, 'a'), (2, 'b'), (9,'c'), (10,'d')]. A pattern with this string has an 'a' at index 1, a 'b' at index 2, a 'c' at index 9 and a 'd' at index 10. The other characters of the string are undefined by this pattern so they can be arbitrary characters. We manually define a list of patterns:
 
-### Creating a guonnlp vocabulary for the experiment:
+    string_patterns = [
+        [(1, 'a'), (2, 'b'), (9,'c'), (10,'d')],
+        [(1, 'x'), (2, 'y'), (9,'v'), (10,'b')],
+        [(1, 'e'), (2, 'f'), (9,'g'), (10,'h')],
+        [(1, 'j'), (2, 'k'), (9,'l'), (10,'m')]
+    ]
 
-A gluonnlp vocabulary is created as follows:
+We generate n training strings of length l (l must be larger than the largest index in string_patterns), where each training string has one of the patterns in string_patterns. For each training string we chose the pattern of string_patterns randomly. Each training string ends with a new line.
 
-    temp = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\n"
-    counter = nlp.data.count_tokens(temp)
-    vocab = nlp.Vocab(counter, unknown_token=None, padding_token=None, bos_token=None, eos_token='\n')
-
-    print(len(vocab))
-    for i in range(len(vocab)):
-        print(vocab.idx_to_token[i])
-
-We can see that the vocabulary has 56 tokens (A-Z, a-z, "\n", unk, pad, bos).
-
-### Generating training/test strings:
- 
-Training strings are generated with a fixed value for n_noise, where n_noise determines the number of characters between the first and last character. The first and last character of all train and test strings follow a certain pattern.
-
-    def get_string_with_first_last_pattern(first_char, last_char, n_between):
-        temp_string = first_char
-        for i in range(n_between):
-            temp_string = temp_string + random.choice(string.ascii_letters)
-        temp_string = temp_string + last_char + '\n'
-        return temp_string
-
-    n_noise = 20
-
-    for i in range(5):
-        print(get_string_with_first_last_pattern('a', 'b', n_noise))
-
-We can see that strings generated this way begin with 'a' and end on 'b'
-
-    aqIeXsfOYVEmzghzWIECOb
-    aAfmnXyYaoKJccfHwjkuTb
-    aAPqOIpzcVYdcFVVOHDNfb
-    aJmnGErMdhEHNTKIOiTmSb
-    aNSWYgqbdSbpejiKRwsCyb
-
-### Building a RNN from scratch
-
-Following tutorial: https://d2l.ai/chapter_recurrent-neural-networks/rnn-scratch.html with some modifications.
-
-#### The RNN parameters
-
-First, we define the RNN parameters:
- 
-    def get_params(vocab_size, num_hiddens, ctx):
-        num_inputs = num_outputs = vocab_size
+    def replace_char_at_index(s, idx, c):
+        return s[:idx] + c + s[idx + 1:]
     
-        def normal(shape):
-            return np.random.normal(scale=0.01, size=shape, ctx=ctx)
-        # Hidden layer parameters
-        W_xh = normal((num_inputs, num_hiddens))
-        W_hh = normal((num_hiddens, num_hiddens))
-        b_h = np.zeros(num_hiddens, ctx=ctx)
-        # Output layer parameters
-        W_hq = normal((num_hiddens, num_outputs))
-        b_q = np.zeros(num_outputs, ctx=ctx)
-        # Attach gradients
-        params = [W_xh, W_hh, b_h, W_hq, b_q]
-        for param in params:
-            param.attach_grad()
-        return params
-
-In each time step, one character of the training string is fed into the RNN and each character is one-hot-encoded. Since we have 56 tokens in the vocabulary, the number of input units is 56 (see next section). num_hiddens can be adjusted arbitrarily. ctx is used to tell mxnet if we're using a gpu or cpu. I'm using a cpu locally.
-
-#### One-hot-encoding of characters
-
-To feed training strings into the RNN, we need a one-hot-encoding of training strings. We will use gluonnlp's batchify class for this. Here's an example of how this works:
-
-The RNN is trained on sequences of fixed length. In this case the sequence length is 2 + n_noise (1 start-character + n_noise noise-characters + 1 end-character).
-
-    sequence_length = n_noise + 2
-    batch_size = 1
-
-    batchify = nlp.data.batchify.CorpusBPTTBatchify(vocab, sequence_length, 1, last_batch='keep')
-    single_train_string = get_string_with_first_last_pattern('a', 'b', n_noise)
-    rnn_train_data = batchify(single_train_string)
-
-    print(type(rnn_train_data))
-    print(len(rnn_train_data))
-    print(rnn_train_data[0])
-
-We see that rnn_train_data is a SimpleDataset of length 1. Printing the single entry shows a tuple where the first item represents the training string from the first character to the last character and the second item represents the string from the second character until the new line character. Thus, in each training step, the second item will be the learning target.
-
-Next, the "forward-pass" of the RNN:
-
-    def rnn(inputs, state, params):
-        # Inputs shape: (num_steps, 1, vocab_size)
-        W_xh, W_hh, b_h, W_hq, b_q = params
-        H, = state
-        outputs = []
-        for X in inputs:
-            H = np.tanh(np.dot(X, W_xh) + np.dot(H, W_hh) + b_h)
-            Y = np.dot(H, W_hq) + b_q
-            outputs.append(Y)
-        return np.concatenate(outputs, axis=0), (H,)
-
-In the for loop, we're iterating over each character of the training string.
-Getting the initial parameters of the RNN and initializing the state:
-
-    def get_params(vocab_size, num_hiddens, ctx):
-        num_inputs = num_outputs = vocab_size
+    def get_string_with_pattern(string_pattern, string_length):
+        rand_string = ''.join(random.choice(string.ascii_lowercase) for x in range(string_length))
+        for (idx, char) in string_pattern:
+            rand_string = replace_char_at_index(rand_string, idx, char)
+        rand_string = rand_string + '\n'
+        return rand_string
     
-        def normal(shape):
-            return np.random.normal(scale=0.01, size=shape, ctx=ctx)
-        # Hidden layer parameters
-        W_xh = normal((num_inputs, num_hiddens))
-        W_hh = normal((num_hiddens, num_hiddens))
-        b_h = np.zeros(num_hiddens, ctx=ctx)
-        # Output layer parameters
-        W_hq = normal((num_hiddens, num_outputs))
-        b_q = np.zeros(num_outputs, ctx=ctx)
-        # Attach gradients
-        params = [W_xh, W_hh, b_h, W_hq, b_q]
-        for param in params:
-            param.attach_grad()
-        return params
+    def get_training_strings(n_strings, string_length):
+        train_strings = []
+        for i in range(n_strings):
+            pattern = random.choice(string_patterns)
+            train_string = get_string_with_pattern(pattern, string_length)
+            train_strings.append(train_string)
+        return train_strings
+
+Example: 5 training strings of length 20.
+
+    training_strings = get_training_strings(5, 20)
+    for s in training_strings:
+        print(s)
+
+Gives the following:
+
+    jjkjqmwdulmkaggacbzs
     
-    def init_rnn_state(batch_size, num_hiddens, ctx):
-        return (np.zeros(shape=(batch_size, num_hiddens), ctx=ctx), )
-
-Now the RNN class:
-
-    class RNNModelScratch:
-        """A RNN Model based on scratch implementations."""
+    bjkcgitwwlmfdzabubdm
     
-        def __init__(self, vocab_size, num_hiddens, ctx,
-                     get_params, init_state, forward):
-            self.vocab_size, self.num_hiddens = vocab_size, num_hiddens
-            self.params = get_params(vocab_size, num_hiddens, ctx)
-            self.init_state, self.forward_fn = init_state, forward
+    qefglqoerghfjcbxigxg
     
-        def __call__(self, X, state):
-            X = npx.one_hot(X, self.vocab_size)
-            return self.forward_fn(X, state, self.params)
+    sxyabgqaavbneftjchez
     
-        def begin_state(self, batch_size, ctx):
-            return self.init_state(batch_size, self.num_hiddens, ctx)
+    ajkxbnhftlmmlkkpizky
+
+With this we can generate batchified training data and a gluon Vocab as follows:
+
+    def batchify_training_data(tokens, batch_size, vocab):
+        batches = [tokens[i*(batch_size):(i+1)*batch_size] for i in range(int(len(tokens)/batch_size))]
+        # temp_x is a list of all batches (100 training_strings, batch_size=32) -> 3 batches
+        # Each item in temp_x is a ndarray of dimension len(training_string)xbatch_size (each column is a training_string)
+        # we have batch_size columns per item in temp_x
+        temp_x = [mxnet.nd.array([vocab(training_string[:-1]) for training_string in batch]).T for batch in batches]
+        # temp_y is the corresponding next item for each training string in temp_train
+        temp_y = [mxnet.nd.array([vocab(training_string[1:]) for training_string in batch]).T for batch in batches]
+        training_data = list(zip(temp_x, temp_y))
+        return training_data
     
-        def collect_params(self):
-            return self.params
+    def generate_training_data(training_string_length, n_training_strings, batch_size):
+        training_strings = get_training_strings(n_training_strings, training_string_length)
+        tokens = [list(training_string) for training_string in training_strings]
+        tokens_flattened = [item for sublist in tokens for item in sublist]
+        counter = gluonnlp.data.count_tokens(tokens_flattened)
+        vocab = gluonnlp.Vocab(counter)
+        batchified_training_data = batchify_training_data(tokens, batch_size, vocab)
+        return batchified_training_data, vocab
 
-We can now create an instance of the RNN and feed a training string into the (untrained) RNN.
+Example: Generate 100 training strings, each with length 20. Batchify the training strings into batches of 32 strings:
 
-    num_hiddens, ctx = 512, mx.cpu()
+    training_data, vocab = generate_training_data(20, 100, 32)
+    print(type(training_data)) 
+    print(len(training_data))
+    print(type(training_data[0]))
+    print(type(training_data[0][0]))
+    print(training_data[0][0].shape)
+    print(training_data[0][1].shape)
+    print(training_data[0][0][:,0])
+    print(training_data[0][1][:,0])
+    print(vocab)
 
-    model = RNNModelScratch(len(vocab), num_hiddens, ctx, get_params,
-                        init_rnn_state, rnn)
+Gives the following:
 
-    state = model.begin_state(batch_size=1, ctx=ctx)
-    result = model(rnn_train_data[0], state)
-
-    print(type(result))
-    print(len(result))
-    print(result[0].shape)
-    print(type(result[1]))
-    print(len(result[1]))
-    print(result[1][0].shape)
-
-We can see that we get back a tuple of length 2. The first element is the the RNN's output at each character-step. The second element is the hidden state of the RNN after the last character was fed into the RNN.
-
-Before training the model we need two helper methods. One is grad_clipping, which scales the parameters in order to avoid the parameters of the model to "explode" through backpropagation. The other one is gd (gradient descent) which is used to update the parameter models. We're also defining a loss function that we will use to train the model. We're using softmax cross entropy loss here.
-
-    def grad_clipping(model, theta):
-        params = model.params
-        norm = math.sqrt(sum((p.grad ** 2).sum() for p in params))
-        if norm > theta:
-            for param in params:
-                param.grad[:] *= theta / norm
+    <class 'list'>
+    3
+    <class 'tuple'>
+    <class 'mxnet.ndarray.ndarray.NDArray'>
+    (20, 32)
+    (20, 32)
     
-    def gd(params):
-        for param in params:
-            param[:] = param - 0.1 * param.grad
+    [29. 18.  8. 12. 28. 18. 11. 28. 15. 14.  4. 25. 30. 22. 28. 11. 19. 22.
+      4. 27.]
+    <NDArray 20 @cpu(0)>
+    
+    [18.  8. 12. 28. 18. 11. 28. 15. 14.  4. 25. 30. 22. 28. 11. 19. 22.  4.
+     27.  6.]
+    <NDArray 20 @cpu(0)>
+    Vocab(size=31, unk="<unk>", reserved="['<pad>', '<bos>', '<eos>']")
 
-    loss = mx.gluon.loss.SoftmaxCrossEntropyLoss()
+Explanation: We see that training_data is a list of length 3. Reason: 100 training strings in batches of 32 -> 3 batches. (last 4 training strings are discarded). Each batch is a tuple. The first element of each tuple is training data, the second element is labels. Training data and labels are NDArrays of shape (20,32) (each column represents a training string/label string, 32 strings per batch). Above, we take the first batch and print the first column of both the training and label matrix. Training strings and labels are now represented by indices in the vocab. Indices can be mapped back to characters by using vocab.idx_to_token. Comparing the training data and label for a particular training string (for a particular column) we can see that the label is the training string "offset" by one position. This makes sense because the goal of the RNN will be to predict the next character of a string, given a prefix. The vocabulary is of size 31: 26 alphabetic characters + new line, unk, pad, bos and eos. (Todo: why is new line not eos?)
 
-Now the actual training of the model
+## Building a RNN
 
-    def train_epoch_ch8(model, train_iter, loss, updater, ctx):
-        loss_total = 0
-        for X, Y in train_iter:
+    We can now build a RNN by subclassing gluons Block class
     
-            X = X.as_np_ndarray()
-            Y = Y.as_np_ndarray()
+    class RNNModel(nn.Block):
+        def __init__(self, rnn_layer, vocab_size, **kwargs):
+            super(RNNModel, self).__init__(**kwargs)
+            self.rnn = rnn_layer
+            self.vocab_size = vocab_size
+            self.dense = nn.Dense(vocab_size)
+            
+        def forward(self, inputs, state):
+            X = nd.one_hot(inputs, self.vocab_size)
+            Y, state = self.rnn(X, state)
+            output = self.dense(Y.reshape(-1, Y.shape[-1]))
+            return output, state
     
-            state = model.begin_state(batch_size=1, ctx=ctx)
-    
-            y = Y.T.reshape(-1)
-            X, y = X.as_in_ctx(ctx), y.as_in_ctx(ctx)  
-    
+        def begin_state(self, *args, **kwargs):
+            return self.rnn.begin_state(*args, **kwargs)
+
+    def get_rnn(n_hidden, vocab_size):
+        rnn_layer = rnn.RNN(512)
+        rnn_layer.initialize()
+        model = RNNModel(rnn_layer, vocab_size)
+        return model
+
+Training of the model looks as follows:
+
+    def train_model(model, train_data, loss, updater, ctx):
+        state = None
+        batch_size = train_data[0][0].shape[1]
+        metric = Accumulator(2)
+        acc_l, n = 0, 0
+        for X, Y in train_data:
+            state = model.begin_state(batch_size)
+            y = Y.reshape(-1)
             with autograd.record():
                 py, state = model(X, state)
                 l = loss(py, y).mean()
-    
-            loss_total += l
             l.backward()
             grad_clipping(model, 1)
-    
-            updater(model.params)
-    
-        return loss_total/len(train_iter)
+            updater(batch_size=1)
+            acc_l += l * y.size
+            n += y.size
+        print(exp(acc_l/n))
 
-The train method gets a number of train/target (X/Y) sequences as input, as well as a loss function (softmax cross entropy loss) and an updater (gd). Now we just need to call this method with appropriate training data. Each training episode we're either generating a training string that begins with an 'a' and ends with a 'b' or we generate one that begins with a 'c' and ends on a 'd'. The target string is always the same as the training string shifted by one character to the right (train="axyzb" -> target ="xyzb\n"). The training strings have the patterns discussed above.
+We see that we pass in a loss function and an updated function. Those are described below. To validate the model, we also need to predict characters given a prefix. We do this as follows:
 
-    def train_ch8_changing_train_string(model, vocab, sequence_length, loss, lr, num_epochs, ctx):
-    
-        def updater(model):
-            return gd(model)
-    
-        for epoch in range(num_epochs):
-    
-            string1 = ""
-            if (epoch%2 == 0):
-                string1 = string1 + get_string_with_first_last_pattern('a', 'b', sequence_length-2)
-            else:
-                string1 = string1 + get_string_with_first_last_pattern('c', 'd', sequence_length-2)
-    
-            bptt_batchify = nlp.data.batchify.CorpusBPTTBatchify(vocab, sequence_length + 1, batch_size, last_batch='keep')
-            train_data = bptt_batchify(string1)
-    
-            l = train_epoch_ch8(model, train_data, loss, updater, ctx)
-            if epoch % 100 == 0:
-                print("done with epoch " + str(epoch))
-                print("loss: " + str(l))
-                print(predict_ch8('a', sequence_length, model, vocab, ctx))
-                print(predict_ch8('c', sequence_length, model, vocab, ctx))
-    
-Every 100 episodes, we're sampling two sequences from the RNN: one sequence that begins with an 'a' and one sequence that begins with a 'c'. This will give us some idea of how well the RNN has learned the pattern in the training strings up to this episode. predict_ch8 is defined as follows:
-
-    def predict_ch8(prefix, num_predicts, model, vocab, ctx):
-        state = model.begin_state(batch_size=1, ctx=ctx)
+    def predict(prefix, num_predicts, model, vocab, device):
+        state = model.begin_state(batch_size=1)
         outputs = [vocab[prefix[0]]]
-    
-        def get_input():
-            return np.array([outputs[-1]], ctx=ctx).reshape(1, 1)
-        for y in prefix[1:]:  # Warmup state with prefix
+        get_input = lambda: mxnet.nd.array([outputs[-1]], ctx=device).reshape(1, 1)
+        for y in prefix[1:]:
             _, state = model(get_input(), state)
             outputs.append(vocab[y])
-        for _ in range(num_predicts):  # Predict num_predicts steps
+        for _ in range(num_predicts):
             Y, state = model(get_input(), state)
-            outputs.append(int(Y.argmax(axis=1).reshape(1)))
+            outputs.append(int(Y.argmax(axis=1).reshape(1).asnumpy()))
         return ''.join([vocab.idx_to_token[i] for i in outputs])
 
-We can observe that after a few thousand epochs, the RNN has learned that strings beginning with 'a' are ending on 'b' and strings beginning with 'c' are ending with 'd'. The RNN has also learned that the ending 'b'/'d' is followed by a new line character:
+Now we can generate some training data, create a model, train the model and after each iteration over the training data generate a string with this model. After each iteration over the training data, we generate a prefix that contains the first two characters of each pattern. We can then observe if the suffix generated by the model contains the last two characters in each pattern.
 
-    done with epoch 9100
-    loss: 2.852933
-    aCCgZeb
+    def main():
+        batch_size = 32
+        string_length = 12
+        n_training_strings = 1000
+        batchified_training_data, vocab = generate_training_data(string_length, n_training_strings, batch_size)
+        #temp = one_hot_encode(batchified_training_data[0][0], vocab)
+        model = get_rnn(512, len(vocab))
+        model.initialize(force_reinit=True, ctx = mxnet.cpu(), init=init.Normal(0.01))
+        lr = 0.2
+        trainer = mxnet.gluon.Trainer(model.collect_params(),'sgd', {'learning_rate': lr})
+        updater = lambda batch_size: trainer.step(batch_size)
+        loss = mxnet.gluon.loss.SoftmaxCrossEntropyLoss()
+        #print(batchified_training_data[0][0].shape[1])
+        for i in range(200):
+            print("epoch: " + str(i))
+            train_model(model, batchified_training_data, loss, updater, mxnet.cpu())
+            sample_string_from_model_for_patterns(model, string_patterns, string_length, vocab) 
 
-    cCCgZed                                                                                                                                                                                              
-    done with epoch 9200
-    loss: 2.8556256
-    aCDCZKb
+We can see that for a training string length of 12, after roughly 100 training epochs, the suffixes sampled from the model contain the patterns of the training strings:
 
-    cbDbZbd                                                                                                                                                                                              
-    done with epoch 9300
-    loss: 2.880085
-    affYUVb
-
-    cfYUfdd
-
+    epoch: 53
+    loss: 
+    [7.6413903]
+    <NDArray 1 @cpu(0)>
+    cabbafabocdh 
+    output has pattern
+    bxymmnabvvbg
+    output has pattern
+    kefnjoyzvghy
+    output has pattern
+    tjkszsdghlmb
+    output has pattern

@@ -108,7 +108,7 @@ Explanation: We see that training_data is a list of length 3. Reason: 100 traini
 
 ## Building a RNN
 
-    We can now build a RNN by subclassing gluons Block class
+We can now build a RNN by subclassing gluons Block class
     
     class RNNModel(nn.Block):
         def __init__(self, rnn_layer, vocab_size, **kwargs):

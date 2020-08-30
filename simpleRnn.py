@@ -117,6 +117,16 @@ def train_epoch_ch8(model, train_iter, loss, updater, ctx):
 
     return loss_total/len(train_iter)
 
+def evaluate(model, vocab, sequence_length, ctx):
+    correct = 0
+    for i in range(100):
+        second = random.choice(string.ascii_letters)
+        res = predict_ch8('a'+second, sequence_length-1, model, vocab, ctx)
+        correct += 1 if len(res) == (sequence_length + 1) and res[len(res)-2] == 'b' and res[len(res)-1] == '\n' else 0
+        res = predict_ch8('c'+second, sequence_length-1, model, vocab, ctx)
+        correct += 1 if len(res) == (sequence_length + 1) and res[len(res)-2] == 'd' and res[len(res)-1] == '\n' else 0
+    print("correct: " + str(correct/200))
+
 def train_ch8_changing_train_string(model, vocab, sequence_length, loss, lr, num_epochs, ctx):
 
     def updater(model):
@@ -134,11 +144,10 @@ def train_ch8_changing_train_string(model, vocab, sequence_length, loss, lr, num
         train_data = bptt_batchify(string1)
 
         l = train_epoch_ch8(model, train_data, loss, updater, ctx)
-        if epoch % 100 == 0:
+        if epoch % 1000 == 0:
             print("done with epoch " + str(epoch))
             print("loss: " + str(l))
-            print(predict_ch8('a', sequence_length, model, vocab, ctx))
-            print(predict_ch8('c', sequence_length, model, vocab, ctx))
+            evaluate(model, vocab, sequence_length, ctx)
 
 temp = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\n"
 counter = nlp.data.count_tokens(temp)
@@ -146,7 +155,7 @@ vocab = nlp.Vocab(counter, eos_token='\n')
 for i in range(len(vocab)):
     print(vocab.idx_to_token[i])
 
-n_noise = 5
+n_noise = 20
 
 for i in range(5):
     print(get_string_with_first_last_pattern('a', 'b', n_noise), end="")
